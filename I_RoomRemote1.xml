@@ -1,0 +1,268 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<implementation >
+	<functions>
+
+		local DEBUG_MODE = true
+
+		local RR_SID = "urn:chrisbirkinshaw-me-uk:serviceId:RoomRemote1"
+		local INPUT_SID = "urn:micasaverde-com:serviceId:InputSelection1"
+		local VOLUME_SID = "urn:micasaverde-com:serviceId:Volume1"
+		local MEDIA_NAV_SID = "urn:micasaverde-com:serviceId:MediaNavigation1"
+		local MENU_NAV_SID = "urn:micasaverde-com:serviceId:MenuNavigation1"
+		local POWER_SID = "urn:micasaverde-com:serviceId:DiscretePower1"
+		local HA_SID = "urn:micasaverde-com:serviceId:HomeAutomationGateway1"
+		local AV_SID = "urn:upnp-org:serviceId:AVTransport"
+		local MISC_SID = "urn:micasaverde-com:serviceId:Misc1"
+		local DIM_SID = "urn:upnp-org:serviceId:Dimming1"
+		
+		local currentInput = ""
+		local receiverDevice = ""
+		local allOffScene = ""
+		local redScene = ""
+		local greenScene = ""
+		local yellowScene = ""
+		local blueScene = ""
+		local lightsList = ""
+		
+		local inputSourceToDeviceMapping = {}
+
+		local function log(text, level)
+        	luup.log("RoomControl: " .. text, (level or 1))
+    	end
+
+		local function debug(text)
+         	if (DEBUG_MODE == true) then
+              	log("debug: " .. text, 50)
+           	end
+        end
+
+		local function check_config_variable(name)
+			local value = luup.variable_get(RR_SID, name, lul_device)
+			if value == nil then
+				debug("Initialising variable name = " .. name)
+				luup.variable_set(RR_SID, name, "", lul_device)
+			elseif value == "" then
+				log("Config variable " .. name .. " is blank", 2)
+			else
+				return true
+			end
+			return false
+		end	
+
+		function room_remote_startup(lul_device)	
+			log("Room Remote startup", 50)
+			check_config_variable("ReceiverDevice")
+			check_config_variable("AllOffScene")
+			check_config_variable("Source1Device")
+			check_config_variable("Source1Input")
+			check_config_variable("Source2Device")
+			check_config_variable("Source2Input")
+			check_config_variable("Source3Device")
+			check_config_variable("Source3Input")
+			check_config_variable("RedScene")
+			check_config_variable("GreenScene")
+			check_config_variable("YellowScene")
+			check_config_variable("BlueScene")
+			check_config_variable("LightsList")
+
+			inputSourceToDeviceMapping[luup.variable_get(RR_SID, "Source1Input", lul_device)] = luup.variable_get(RR_SID, "Source1Device", lul_device)
+			inputSourceToDeviceMapping[luup.variable_get(RR_SID, "Source2Input", lul_device)] = luup.variable_get(RR_SID, "Source2Device", lul_device)
+			inputSourceToDeviceMapping[luup.variable_get(RR_SID, "Source3Input", lul_device)] = luup.variable_get(RR_SID, "Source3Device", lul_device)
+
+			for k,v in pairs(inputSourceToDeviceMapping) do 
+			debug("Row pairs")
+				debug(k .. " = " .. v)			
+			end
+			
+			allOffScene = luup.variable_get(RR_SID, "AllOffScene", lul_device)
+			receiverDevice = luup.variable_get(RR_SID, "ReceiverDevice", lul_device)
+			redScene = luup.variable_get(RR_SID, "RedScene", lul_device)
+			greenScene = luup.variable_get(RR_SID, "GreenScene", lul_device)
+			yellowScene = luup.variable_get(RR_SID, "YellowScene", lul_device)
+			blueScene = luup.variable_get(RR_SID, "BlueScene", lul_device)
+			lightsList = luup.variable_get(RR_SID, "LightsList", lul_device)
+			
+			if receiverDevice  == "" then
+				log("Media controls will not work without ReceiverDevice config", 2)
+			else
+				debug("Setting up Input watcher")
+				luup.variable_watch("receiver_input_changed", INPUT_SID, "Input", tonumber(receiverDevice))
+				debug("Getting current input")
+				currentInput = luup.variable_get(INPUT_SID, "Input", tonumber(receiverDevice))
+			end	
+		end
+		
+		function receiver_input_changed(lul_device, lul_service, lul_variable, lul_value_old, lul_value_new)
+			currentInput = tostring(lul_value_new)
+			debug("Receiver input is now " .. currentInput)
+		end
+		
+		local function sendCommand(serviceId, action)
+			debug("Current input is .. " .. currentInput )
+			if inputSourceToDeviceMapping[currentInput] == "" then
+				log("No source mapping for this input", 2)
+			elseif inputSourceToDeviceMapping[currentInput] == lul_device then
+				log("Source device equal to this device is not allowed", 2)
+			elseif inputSourceToDeviceMapping[currentInput] == "0" then
+				log("Source device of zero not allowed", 2)
+			else
+				debug("Diverting command to device " .. inputSourceToDeviceMapping[currentInput])
+				if ( action == "Play" and serviceId == MEDIA_NAV_SID ) then
+					debug("Checking device playback status before issuing Play command")
+					local transportState = luup.variable_get(AV_SID, "TransportState", tonumber(inputSourceToDeviceMapping[currentInput])) 
+					if transportState == "PLAYING" then
+						debug("Device already playing, therefore sending Pause command instead")
+						luup.call_action(serviceId, "Pause", {}, tonumber(inputSourceToDeviceMapping[currentInput]))
+					else
+						debug("Device not playing, therefore sending Play command as requested")
+						luup.call_action(serviceId, "Play", {}, tonumber(inputSourceToDeviceMapping[currentInput]))
+					end
+				else
+					luup.call_action(serviceId, action, {}, tonumber(inputSourceToDeviceMapping[currentInput]))
+				end
+			end
+		end
+		
+		local function lightLevel(action)
+			debug("Light level " .. action)
+			for light in string.gmatch(lightsList, "(%d),*") do 
+				local level = luup.variable_get(DIM_SID, "LoadLevelStatus", tonumber(light))
+				debug("Light level is " .. level .. " for device " .. light)
+				if ( action == "Up" and tonumber(level) ~= 100 ) then
+					debug("Increasing by 20")
+					luup.call_action( DIM_SID, "SetLoadLevelTarget", { newLoadlevelTarget = (tonumber(level)+20)}, tonumber(light))
+				end
+				if ( action == "Down" and tonumber(level) ~= 0 ) then
+					debug("Decreasing by 20")
+					luup.call_action( DIM_SID, "SetLoadLevelTarget", { newLoadlevelTarget = (tonumber(level)-20)}, tonumber(light))
+				end
+			end
+		end
+
+	</functions>
+
+	<startup>room_remote_startup</startup>
+	
+	<actionList>
+		<action>
+			<serviceId>urn:micasaverde-com:serviceId:DiscretePower1</serviceId>
+			<name>Off</name>
+			<run>luup.call_action(HA_SID, "RunScene", {SceneNum = allOffScene}, 0)</run>
+		</action>
+		<action>
+			<serviceId>urn:micasaverde-com:serviceId:Misc1</serviceId>
+			<name>FastextRed</name>
+			<run>luup.call_action(HA_SID, "RunScene", {SceneNum = redScene}, 0)</run>
+		</action>
+		<action>
+			<serviceId>urn:micasaverde-com:serviceId:Misc1</serviceId>
+			<name>FastextGreen</name>
+			<run>luup.call_action(HA_SID, "RunScene", {SceneNum = greenScene}, 0)</run>
+		</action>
+		<action>
+			<serviceId>urn:micasaverde-com:serviceId:Misc1</serviceId>
+			<name>FastextYellow</name>
+			<run>luup.call_action(HA_SID, "RunScene", {SceneNum = yellowScene}, 0)</run>
+		</action>
+		<action>
+			<serviceId>urn:micasaverde-com:serviceId:Misc1</serviceId>
+			<name>FastextBlue</name>
+			<run>luup.call_action(HA_SID, "RunScene", {SceneNum = blueScene}, 0)</run>
+		</action>
+		<action>
+			<serviceId>urn:micasaverde-com:serviceId:MenuNavigation1</serviceId>
+			<name>Menu</name>
+			<run>sendCommand(MENU_NAV_SID, "Menu") </run>
+		</action>
+		<action>
+			<serviceId>urn:micasaverde-com:serviceId:MenuNavigation1</serviceId>
+			<name>Back</name>
+			<run>sendCommand(MENU_NAV_SID, "Back") </run>
+		</action>
+		<action>
+			<serviceId>urn:micasaverde-com:serviceId:MenuNavigation1</serviceId>
+			<name>Down</name>
+			<run>sendCommand(MENU_NAV_SID, "Down")</run>
+		</action>
+		<action>
+			<serviceId>urn:micasaverde-com:serviceId:MenuNavigation1</serviceId>
+			<name>Left</name>
+			<run>sendCommand(MENU_NAV_SID, "Left")</run>
+		</action>
+		<action>
+			<serviceId>urn:micasaverde-com:serviceId:MenuNavigation1</serviceId>
+			<name>Right</name>
+			<run>sendCommand(MENU_NAV_SID, "Right")</run>
+		</action>
+		<action>
+			<serviceId>urn:micasaverde-com:serviceId:MenuNavigation1</serviceId>
+			<name>Select</name>
+			<run>sendCommand(MENU_NAV_SID, "Select")</run>
+		</action>
+		<action>
+			<serviceId>urn:micasaverde-com:serviceId:MenuNavigation1</serviceId>
+			<name>Up</name>
+			<run>sendCommand(MENU_NAV_SID, "Up")</run>
+		</action>
+		<action>
+			<serviceId>urn:micasaverde-com:serviceId:MediaNavigation1</serviceId>
+			<name>Play</name>
+			<run>sendCommand(MEDIA_NAV_SID, "Play")</run>
+		</action>
+		<action>
+			<serviceId>urn:micasaverde-com:serviceId:MediaNavigation1</serviceId>
+			<name>Stop</name>
+			<run>sendCommand(MEDIA_NAV_SID, "Stop")</run>
+		</action>
+		<action>
+			<serviceId>urn:micasaverde-com:serviceId:MediaNavigation1</serviceId>
+			<name>FastForward</name>
+			<run>sendCommand(MEDIA_NAV_SID, "FastForward")</run>
+		</action>
+		<action>
+			<serviceId>urn:micasaverde-com:serviceId:MediaNavigation1</serviceId>
+			<name>Rewind</name>
+			<run>sendCommand(MEDIA_NAV_SID, "Rewind")</run>
+		</action>
+		<action>
+            <serviceId>urn:micasaverde-com:serviceId:Volume1</serviceId>
+            <name>Down</name>
+            <run>luup.call_action(VOLUME_SID, "Down", {}, tonumber(receiverDevice))</run>
+        </action>
+        <action>
+            <serviceId>urn:micasaverde-com:serviceId:Volume1</serviceId>
+            <name>Mute</name>
+            <run>luup.call_action(VOLUME_SID, "Mute", {}, tonumber(receiverDevice))</run>
+        </action>
+        <action>
+            <serviceId>urn:micasaverde-com:serviceId:Volume1</serviceId>
+            <name>Up</name>
+            <run>luup.call_action(VOLUME_SID, "Up", {}, tonumber(receiverDevice))</run>
+        </action>
+        <action>
+            <serviceId>urn:micasaverde-com:serviceId:Misc1</serviceId>
+            <name>EQ</name>
+            <run>luup.call_action(MISC_SID, "EQ", {}, tonumber(receiverDevice))</run>
+        </action>
+        <action>
+            <serviceId>urn:micasaverde-com:serviceId:Misc1</serviceId>
+            <name>Info</name>
+            <run>sendCommand(MISC_SID, "Info")</run>
+        </action>
+        <action>
+            <serviceId>urn:micasaverde-com:serviceId:Misc1</serviceId>
+            <name>Home</name>
+            <run>sendCommand(MISC_SID, "Home")</run>
+        </action>
+        <action>
+            <serviceId>urn:micasaverde-com:serviceId:Tuning1</serviceId>
+            <name>ChannelUp</name>
+            <run>lightLevel("Up")</run>
+        </action>
+        <action>
+            <serviceId>urn:micasaverde-com:serviceId:Tuning1</serviceId>
+            <name>ChannelDown</name>
+            <run>lightLevel("Down")</run>
+        </action>       
+	</actionList>
+</implementation>
