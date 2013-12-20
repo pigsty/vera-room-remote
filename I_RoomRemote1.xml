@@ -137,7 +137,7 @@
 				end
 				if ( action == "Down" and tonumber(level) ~= 0 ) then
 					debug("Decreasing by 20")
-					if tonumber(level) < 20 then
+					if ( tonumber(level) &lt; 20 ) then
 						luup.call_action( DIM_SID, "SetLoadLevelTarget", { newLoadlevelTarget = 0}, tonumber(light))
 					else
 						luup.call_action( DIM_SID, "SetLoadLevelTarget", { newLoadlevelTarget = (tonumber(level)-20)}, tonumber(light))
